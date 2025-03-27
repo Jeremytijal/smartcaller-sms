@@ -120,6 +120,8 @@ def reply_sms():
 
     except Exception as e:
         print("❌ Erreur dans /reply-sms :", str(e))
+        print("📤 Réponse envoyée à Twilio :")
+        print(str(response))
         return Response("Erreur serveur", status=500)
 
 # ✅ Pour Railway : host et port dynamiques
