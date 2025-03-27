@@ -59,63 +59,68 @@ def send_initial_sms():
 # ✅ 2. Endpoint déclenché par Twilio quand l’utilisateur répond
 @app.route("/reply-sms", methods=["POST"])
 def reply_sms():
-    from_number = request.form.get("From")
-    user_message = request.form.get("Body")
+    try:
+        from_number = request.form.get("From")
+        user_message = request.form.get("Body")
 
-    print(f"🔁 Réponse reçue de {from_number} : {user_message}")
+        print(f"🔁 Réponse reçue de {from_number} : {user_message}")
 
-    if not from_number or not user_message:
-        return "Missing data", 400
+        if not from_number or not user_message:
+            return Response("Missing data", status=400)
 
-    # Récupère ou crée un thread
-    thread_id = threads.get(from_number)
-    if not thread_id:
-        print("⚠️ Aucun thread trouvé, création d’un nouveau.")
-        thread = openai_client.beta.threads.create()
-        thread_id = thread.id
-        threads[from_number] = thread_id
-    else:
-        print(f"✅ Thread existant récupéré : {thread_id}")
+        # Récupère ou crée un thread
+        thread_id = threads.get(from_number)
+        if not thread_id:
+            print("⚠️ Aucun thread trouvé, création d’un nouveau.")
+            thread = openai_client.beta.threads.create()
+            thread_id = thread.id
+            threads[from_number] = thread_id
+        else:
+            print(f"✅ Thread existant récupéré : {thread_id}")
 
-    # Envoie du message utilisateur dans le thread
-    openai_client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=user_message
-    )
+        # Envoie du message utilisateur
+        openai_client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=user_message
+        )
 
-    # Lance le run avec ton assistant
-    run = openai_client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=ASSISTANT_ID
-    )
+        # Lance le run
+        run = openai_client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=ASSISTANT_ID
+        )
 
-    # Attend que le run se termine (polling simple)
-    for _ in range(10):
-        run_status = openai_client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-        if run_status.status == "completed":
-            break
-        elif run_status.status == "failed":
-            print("❌ Assistant failed")
-            return "Erreur assistant", 500
-        time.sleep(1)
+        # Attente que le run soit terminé
+        for _ in range(10):
+            run_status = openai_client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+            if run_status.status == "completed":
+                break
+            elif run_status.status == "failed":
+                print("❌ Run failed")
+                return Response("Erreur assistant", status=500)
+            time.sleep(1)
 
-    # Récupère la dernière réponse de l'assistant
-    messages = openai_client.beta.threads.messages.list(thread_id=thread_id)
-    for msg in reversed(messages.data):
-        if msg.role == "assistant":
-            reply_text = msg.content[0].text.value
-            print(f"🤖 Réponse IA : {reply_text}")
-            break
-    else:
+        # Récupération de la réponse
         reply_text = "Je n'ai pas compris, peux-tu reformuler ?"
+        messages = openai_client.beta.threads.messages.list(thread_id=thread_id)
+        for msg in reversed(messages.data):
+            if msg.role == "assistant":
+                try:
+                    reply_text = msg.content[0].text.value
+                    print(f"🤖 Réponse IA : {reply_text}")
+                    break
+                except Exception as e:
+                    print("⚠️ Erreur lecture message assistant :", str(e))
 
-    # Répond via Twilio
+        # Retourne la réponse XML à Twilio
         response = MessagingResponse()
         response.message(reply_text)
-
-        # CORRECTION : retourne la réponse Twilio avec content-type XML
         return Response(str(response), mimetype="application/xml")
+
+    except Exception as e:
+        print("❌ Erreur dans /reply-sms :", str(e))
+        return Response("Erreur serveur", status=500)
 
 # ✅ Pour Railway : host et port dynamiques
 if __name__ == "__main__":
