@@ -111,9 +111,11 @@ def reply_sms():
         reply_text = "Je n'ai pas compris, peux-tu reformuler ?"
 
     # Répond via Twilio
-    response = MessagingResponse()
-    response.message(reply_text)
-    return str(response)
+        response = MessagingResponse()
+        response.message(reply_text)
+
+        # CORRECTION : retourne la réponse Twilio avec content-type XML
+        return Response(str(response), mimetype="application/xml")
 
 # ✅ Pour Railway : host et port dynamiques
 if __name__ == "__main__":
