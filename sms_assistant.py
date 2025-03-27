@@ -1,26 +1,27 @@
 from flask import Flask, request, jsonify, Response
 from openai import OpenAI
 from twilio.rest import Client
+from twilio.twiml.messaging_response import MessagingResponse
 import os
 import time
 
 app = Flask(__name__)
 
-# 🔐 Clés API depuis variables d’environnement
+# 🔐 Variables d’environnement
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
 ASSISTANT_ID = "asst_xffFyDt65Kdt70BfqGzjdnjf"  # Ton assistant OpenAI
 
-# ⚙️ Clients API
+# 🔧 Clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# 🧠 Mémoire simple : numéro => thread_id
+# 💾 Mémoire temporaire : {numéro: thread_id}
 threads = {}
 
-# ✅ 1. Endpoint déclenché depuis Airtable
+# 🔁 Envoi du premier SMS depuis Airtable
 @app.route("/send-initial-sms", methods=["POST"])
 def send_initial_sms():
     data = request.json
@@ -29,7 +30,6 @@ def send_initial_sms():
     if not phone_number:
         return jsonify({"error": "phone_number is required"}), 400
 
-    # Crée un thread pour ce numéro
     thread = openai_client.beta.threads.create()
     threads[phone_number] = thread.id
     print(f"📥 Thread créé pour {phone_number} : {thread.id}")
@@ -46,35 +46,83 @@ def send_initial_sms():
             to=phone_number
         )
         print(f"✅ SMS initial envoyé à {phone_number} : {message.sid}")
-        return jsonify({
-            "status": "Message envoyé",
-            "sid": message.sid,
-            "thread_id": thread.id
-        }), 200
+        return jsonify({"status": "Message envoyé", "thread_id": thread.id}), 200
     except Exception as e:
-        print("❌ Erreur envoi Twilio :", str(e))
+        print("❌ Erreur Twilio :", str(e))
         return jsonify({"error": str(e)}), 500
 
-# ✅ 2. Endpoint déclenché par Twilio quand l’utilisateur répond
+# 🤖 Réception et réponse IA via Twilio
 @app.route("/reply-sms", methods=["POST"])
 def reply_sms():
     try:
         from_number = request.form.get("From")
         user_message = request.form.get("Body")
 
-        print(f"🔁 Réponse reçue de {from_number} : {user_message}")
+        print(f"🔁 Message reçu de {from_number} : {user_message}")
 
-        # ✅ TEST TEMPORAIRE : Réponse simple à Twilio
-        xml_test = """<?xml version="1.0" encoding="UTF-8"?><Response><Message>Réponse test simple !</Message></Response>"""
-        print("📤 Réponse test à Twilio :")
-        print(xml_test)
-        return Response(xml_test, mimetype="application/xml")
+        if not from_number or not user_message:
+            return Response("Missing data", status=400)
+
+        # Thread récupéré ou créé
+        thread_id = threads.get(from_number)
+        if not thread_id:
+            print("⚠️ Thread absent, création...")
+            thread = openai_client.beta.threads.create()
+            thread_id = thread.id
+            threads[from_number] = thread_id
+        else:
+            print(f"✅ Thread existant : {thread_id}")
+
+        # Envoi message à l'assistant
+        openai_client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=user_message
+        )
+
+        # Lancer le run
+        run = openai_client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=ASSISTANT_ID
+        )
+
+        # Attente de complétion
+        for _ in range(10):
+            run_status = openai_client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
+            )
+            if run_status.status == "completed":
+                break
+            elif run_status.status == "failed":
+                print("❌ Run failed")
+                return Response("Erreur IA", status=500)
+            time.sleep(1)
+
+        # Lecture réponse assistant
+        messages = openai_client.beta.threads.messages.list(thread_id=thread_id)
+        reply_text = "Je n'ai pas compris, peux-tu reformuler ?"
+        for msg in reversed(messages.data):
+            if msg.role == "assistant":
+                try:
+                    reply_text = msg.content[0].text.value
+                    print(f"🤖 Réponse IA : {reply_text}")
+                    break
+                except Exception as e:
+                    print("⚠️ Lecture réponse IA :", str(e))
+
+        # Réponse à Twilio en XML
+        response = MessagingResponse()
+        response.message(reply_text)
+        print("📤 XML renvoyé à Twilio :")
+        print(str(response))
+        return Response(str(response), mimetype="application/xml")
 
     except Exception as e:
-        print("❌ Erreur dans /reply-sms :", str(e))
+        print("❌ Erreur générale :", str(e))
         return Response("Erreur serveur", status=500)
 
-# ✅ Pour Railway : port dynamique
+# 🚀 Port dynamique pour Railway
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
