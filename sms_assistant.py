@@ -57,3 +57,60 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
+
+from twilio.twiml.messaging_response import MessagingResponse
+import time
+
+@app.route("/reply-sms", methods=["POST"])
+def reply_sms():
+    from_number = request.form.get("From")
+    user_message = request.form.get("Body")
+
+    if not from_number or not user_message:
+        return "Missing data", 400
+
+    # Vérifie si un thread existe pour ce numéro
+    thread_id = threads.get(from_number)
+    if not thread_id:
+        # Si aucun thread, on en crée un nouveau
+        thread = openai_client.beta.threads.create()
+        thread_id = thread.id
+        threads[from_number] = thread_id
+
+    # 1. Ajoute le message utilisateur au thread
+    openai_client.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=user_message
+    )
+
+    # 2. Lance une interaction avec l’assistant
+    run = openai_client.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id="asst_xffFyDt65Kdt70BfqGzjdnjf"
+    )
+
+    # 3. Attendre que le run soit terminé (petit polling simple)
+    for _ in range(10):
+        run_status = openai_client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+        if run_status.status == "completed":
+            break
+        elif run_status.status == "failed":
+            return "Erreur assistant", 500
+        time.sleep(1)
+
+    # 4. Récupère la dernière réponse de l’assistant
+    messages = openai_client.beta.threads.messages.list(thread_id=thread_id)
+    for msg in reversed(messages.data):
+        if msg.role == "assistant":
+            reply_text = msg.content[0].text.value
+            break
+    else:
+        reply_text = "Je n'ai pas compris, peux-tu reformuler ?"
+
+    # 5. Répond via Twilio
+    response = MessagingResponse()
+    response.message(reply_text)
+    return str(response)
+
+
