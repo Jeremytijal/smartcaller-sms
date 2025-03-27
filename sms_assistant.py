@@ -63,30 +63,30 @@ def reply_sms():
         if not from_number or not user_message:
             return Response("Missing data", status=400)
 
-        # Thread récupéré ou créé
+        # Récupère ou crée un thread
         thread_id = threads.get(from_number)
         if not thread_id:
-            print("⚠️ Thread absent, création...")
+            print("⚠️ Aucun thread trouvé, création d’un nouveau.")
             thread = openai_client.beta.threads.create()
             thread_id = thread.id
             threads[from_number] = thread_id
         else:
             print(f"✅ Thread existant : {thread_id}")
 
-        # Envoi message à l'assistant
+        # Envoie le message utilisateur
         openai_client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=user_message
         )
 
-        # Lancer le run
+        # Lance le run
         run = openai_client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=ASSISTANT_ID
         )
 
-        # Attente de complétion
+        # Attend la complétion
         for _ in range(10):
             run_status = openai_client.beta.threads.runs.retrieve(
                 thread_id=thread_id,
@@ -96,20 +96,24 @@ def reply_sms():
                 break
             elif run_status.status == "failed":
                 print("❌ Run failed")
-                return Response("Erreur IA", status=500)
+                return Response("Erreur assistant", status=500)
             time.sleep(1)
 
-        # Lecture réponse assistant
+        # Lecture de la réponse de l'assistant
         messages = openai_client.beta.threads.messages.list(thread_id=thread_id)
-        reply_text = "Je n'ai pas compris, peux-tu reformuler ?"
+        full_text = "Je n'ai pas compris, peux-tu reformuler ?"
         for msg in reversed(messages.data):
             if msg.role == "assistant":
                 try:
-                    reply_text = msg.content[0].text.value
-                    print(f"🤖 Réponse IA : {reply_text}")
+                    full_text = msg.content[0].text.value
                     break
                 except Exception as e:
-                    print("⚠️ Lecture réponse IA :", str(e))
+                    print("⚠️ Erreur lecture IA :", str(e))
+
+        # ✂️ Limite à 600 caractères max
+        reply_text = full_text[:597] + "..." if len(full_text) > 600 else full_text
+
+        print(f"🤖 Réponse IA tronquée : {reply_text}")
 
         # Réponse à Twilio en XML
         response = MessagingResponse()
@@ -119,8 +123,9 @@ def reply_sms():
         return Response(str(response), mimetype="application/xml")
 
     except Exception as e:
-        print("❌ Erreur générale :", str(e))
+        print("❌ Erreur dans /reply-sms :", str(e))
         return Response("Erreur serveur", status=500)
+
 
 # 🚀 Port dynamique pour Railway
 if __name__ == "__main__":
