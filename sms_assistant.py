@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response  # ✅ Ajout de Response ici
 from openai import OpenAI
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
